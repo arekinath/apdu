@@ -58,7 +58,7 @@
 %% Returns atoms identifying the type of data which this module can
 %% accept and produce.
 
--callback init(apdu:protocol()) -> {ok, state()} | {error, term()}.
+-callback init(apdu:protocol(), [term()]) -> {ok, state()} | {error, term()}.
 %% Initialise the transformation, returning an initial state.
 
 -callback begin_transaction(state()) -> {ok, state()} | {error, term()}.
@@ -83,8 +83,8 @@
 
 
 -export([
-    start_link/2,
-    set_next/2,
+    start_link/3,
+    connect/2,
     command/2,
     commands/2,
     begin_transaction/1,
@@ -97,17 +97,33 @@
     handle_cast/2
 ]).
 
-%% @private
--spec start_link(module(), pcsc:protocol()) -> {ok, pid()} | {error, term()}.
-start_link(Mod, Proto) ->
-    gen_server:start_link(?MODULE, [Mod, Proto], []).
+-spec start_link(mod(), apdu:protocol(), [term()]) -> {ok, pid()} | {error, term()}.
+start_link(Mod, Proto, Args) ->
+    case code:which(Mod) of
+        non_existing ->
+            {error, {bad_module, Mod}};
+        _ ->
+            case code:is_loaded(Mod) of
+                false ->
+                    _ = code:load_file(Mod);
+                _ ->
+                    ok
+            end,
+            case {erlang:function_exported(Mod, formats, 0),
+                  erlang:function_exported(Mod, command, 2)} of
+                {false, _} ->
+                    {error, {not_apdu_transform, Mod}};
+                {_, false} ->
+                    {error, {not_apdu_transform, Mod}};
+                _ ->
+                    gen_server:start_link(?MODULE, [Mod, Proto, Args], [])
+            end
+    end.
 
-%% @private
--spec set_next(pid(), pid()) -> ok | {error, term()}.
-set_next(Pid, NextPid) ->
-    gen_server:call(Pid, {set_next, NextPid}).
+-spec connect(pid(), pid()) -> ok | {error, term()}.
+connect(Pid, NextPid) ->
+    gen_server:call(Pid, {connect, NextPid}).
 
-%% @private
 -spec command(pid(), cmd_cooked()) -> {ok, [reply_cooked()]} | {error, term()}.
 command(Pid, Cmd0) ->
     gen_server:call(Pid, {command, Cmd0}, infinity).
@@ -129,13 +145,11 @@ commands(Pid, [Cmd | Rest]) ->
             Err
     end.
 
-%% @private
 -spec begin_transaction(pid()) -> ok | {error, term()}.
 begin_transaction(Pid) ->
     gen_server:call(Pid, begin_transaction, infinity).
 
-%% @private
--spec end_transaction(pid()) -> ok | {ok, pcsc:disposition()} | {error, term()}.
+-spec end_transaction(pid()) -> ok | {ok, apdu:disposition()} | {error, term()}.
 end_transaction(Pid) ->
     gen_server:call(Pid, end_transaction, infinity).
 
@@ -146,8 +160,8 @@ end_transaction(Pid) ->
 }).
 
 %% @private
-init([Mod, Proto]) ->
-    case Mod:init(Proto) of
+init([Mod, Proto, Args]) ->
+    case Mod:init(Proto, Args) of
         {ok, ModState0} ->
             {ok, #?MODULE{mod = Mod, modstate = ModState0}};
         Err ->
@@ -200,12 +214,16 @@ up_replies([Reply | Rest], S0 = #?MODULE{mod = Mod, modstate = MS0}) ->
 handle_call(get_formats, _From, S0 = #?MODULE{mod = Mod}) ->
     {reply, {ok, Mod:formats()}, S0};
 
-handle_call({set_next, Pid}, _From, S0 = #?MODULE{mod = Mod}) ->
+handle_call({connect, Pid}, _From, S0 = #?MODULE{mod = Mod}) ->
     OurFormats = Mod:formats(),
-    NextFormats = gen_server:call(Pid, get_formats, infinity),
-    case check_formats(OurFormats, NextFormats) of
-        ok ->
-            {reply, ok, S0#?MODULE{next = Pid}};
+    case gen_server:call(Pid, get_formats, infinity) of
+        {ok, NextFormats} ->
+            case check_formats(OurFormats, NextFormats) of
+                ok ->
+                    {reply, ok, S0#?MODULE{next = Pid}};
+                Err ->
+                    {reply, Err, S0}
+            end;
         Err ->
             {reply, Err, S0}
     end;
@@ -223,6 +241,9 @@ handle_call({command, Cmd0}, From, S0 = #?MODULE{mod = Mod, modstate = MS0}) ->
                     gen_server:reply(From, Err),
                     {stop, Err, S1}
             end;
+        {ok, Replies, [], MS1} ->
+            S1 = S0#?MODULE{modstate = MS1},
+            {reply, {ok, Replies}, S1};
         {ok, Replies, Cmds1, MS1} ->
             S1 = S0#?MODULE{modstate = MS1},
             case down_commands(Cmds1, S1) of
@@ -240,6 +261,8 @@ handle_call({command, Cmd0}, From, S0 = #?MODULE{mod = Mod, modstate = MS0}) ->
 handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                    next = Next}) ->
     case Mod:begin_transaction(MS0) of
+        {ok, MS1} when (Next =:= undefined) ->
+            {reply, ok, S0#?MODULE{modstate = MS1}};
         {ok, MS1} ->
             Reply = apdu_transform:begin_transaction(Next),
             {reply, Reply, S0#?MODULE{modstate = MS1}};
@@ -251,6 +274,10 @@ handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
 handle_call(end_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                  next = Next}) ->
     case Mod:end_transaction(MS0) of
+        {ok, MS1} when (Next =:= undefined) ->
+            {reply, ok, S0#?MODULE{modstate = MS1}};
+        {ok, Dispos, MS1} when (Next =:= undefined) ->
+            {reply, {ok, Dispos}, S0#?MODULE{modstate = MS1}};
         {ok, MS1} ->
             Reply = apdu_transform:end_transaction(Next),
             {reply, Reply, S0#?MODULE{modstate = MS1}};
@@ -318,5 +345,27 @@ check_formats_test() ->
                                    {[abc, thing], [test]})),
     ?assertMatch({error, _}, check_formats({foo, bar}, {[foo, xyz, test], abc})),
     ?assertMatch({error, _}, check_formats({foo, [bar, abc]}, {[foo, xyz, test], abc})).
+
+test_xform_test() ->
+    {ok, Pid1} = apdu_transform:start_link(apdu_xform_test_1, t1, []),
+    {ok, Pid2} = apdu_transform:start_link(apdu_xform_test_2, t1, []),
+    ?assertMatch({error, _}, apdu_transform:connect(Pid2, Pid1)),
+    ?assertMatch(ok, apdu_transform:connect(Pid1, Pid2)),
+    ?assertMatch(ok, apdu_transform:begin_transaction(Pid1)),
+    ?assertMatch({ok, [foo_reply]}, apdu_transform:command(Pid1, foo_cmd)),
+    ?assertMatch({ok, eject}, apdu_transform:end_transaction(Pid1)).
+
+test_xform2_test() ->
+    {ok, [Pid1, _Pid2]} = apdu_stack:start_link(t1,
+        [apdu_xform_test_3, apdu_xform_test_2]),
+    ?assertMatch(ok, apdu_transform:begin_transaction(Pid1)),
+    ?assertMatch({ok, [foo_progress, foo_reply]}, apdu_transform:command(Pid1, foo_cmd)),
+    ?assertMatch({ok, reset}, apdu_transform:end_transaction(Pid1)).
+
+stack_err_test() ->
+    Res0 = apdu_stack:start_link(t1, [apdu_xform_test_3, nonexistent_module]),
+    ?assertMatch({error, _}, Res0),
+    Res1 = apdu_stack:start_link(t1, [apdu_xform_test_1, apdu_xform_test_3]),
+    ?assertMatch({error, _}, Res1).
 
 -endif.

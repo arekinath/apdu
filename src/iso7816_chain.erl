@@ -46,7 +46,7 @@
 
 -export([
     formats/0,
-    init/1,
+    init/2,
     begin_transaction/1,
     command/2,
     reply/2,
@@ -72,7 +72,7 @@
 formats() -> {xapdu, apdu}.
 
 %% @private
-init(_Proto) ->
+init(_Proto, []) ->
     {ok, #?MODULE{}}.
 
 %% @private

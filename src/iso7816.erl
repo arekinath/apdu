@@ -48,7 +48,7 @@
 
 -export([
     formats/0,
-    init/1,
+    init/2,
     begin_transaction/1,
     command/2,
     reply/2,
@@ -187,7 +187,7 @@
 formats() -> {[apdu, binary], binary}.
 
 %% @private
-init(Proto) -> {ok, #?MODULE{proto = Proto, state = none}}.
+init(Proto, []) -> {ok, #?MODULE{proto = Proto, state = none}}.
 
 %% @private
 begin_transaction(S = #?MODULE{}) -> {ok, S#?MODULE{state = none}}.

@@ -37,7 +37,7 @@
 
 -export([
     formats/0,
-    init/1,
+    init/2,
     begin_transaction/1,
     command/2,
     reply/2,
@@ -247,7 +247,12 @@
 -type admin_auth_cmd() :: {admin_auth, sym_algo(), binary()}.
 -type admin_auth_reply() :: ok | {error, term()}.
 
+-type init_opts() :: #{
+    gzip_certificates => boolean()
+    }.
+
 -record(?MODULE, {
+    opts :: init_opts(),
     handler :: atom(),
     objmap :: iso7816:tlv_map(),
     gen_algo :: asym_algo(),
@@ -262,8 +267,10 @@
 formats() -> {piv, xapdu}.
 
 %% @private
-init(_Proto) ->
-    {ok, #?MODULE{}}.
+init(_Proto, []) ->
+    {ok, #?MODULE{opts = #{}}};
+init(_Proto, [Opts]) ->
+    {ok, #?MODULE{opts = Opts}}.
 
 %% @private
 terminate(#?MODULE{}) ->
@@ -336,7 +343,7 @@ command({read_cert, Slot}, S0 = #?MODULE{}) ->
     A = cmd_apdu(get_data, 16#3F, 16#ff, #{tag => encode_tag(Tag)}),
     {ok, [A], S0#?MODULE{handler = cert_reply}};
 
-command({write_cert, Slot, Cert}, S0 = #?MODULE{}) ->
+command({write_cert, Slot, Cert}, S0 = #?MODULE{opts = Opts}) ->
     Tag = {cert, Slot},
     RawData = case Cert of
         #'OTPCertificate'{} ->
@@ -345,16 +352,15 @@ command({write_cert, Slot, Cert}, S0 = #?MODULE{}) ->
             public_key:pkix_encode('Certificate', Cert, plain)
     end,
     % Yubico's PIV implementation doesn't seem to support gzip certs very well
-    % We probably need a way to turn this feature off...
-    %
-    % ZippedData = zlib:gzip(RawData),
-    % V = if
-    %     (byte_size(ZippedData) < byte_size(RawData)) ->
-    %         #{ cert => ZippedData, cert_info => <<0:5, 0:1, 1:2>>, lrc => <<>> };
-    %     true ->
-    %         #{ cert => RawData, cert_info => <<0:5, 0:1, 0:2>>, lrc => <<>> }
-    % end,
-    V = #{ cert => RawData, cert_info => <<0:5, 0:1, 0:2>>, lrc => <<>> },
+    % So this is off by default.
+    GzipEnable = maps:get(gzip_certificates, Opts, false),
+    ZippedData = zlib:gzip(RawData),
+    V = if
+        GzipEnable and (byte_size(ZippedData) < byte_size(RawData)) ->
+            #{ cert => ZippedData, cert_info => <<0:5, 0:1, 1:2>>, lrc => <<>> };
+        true ->
+            #{ cert => RawData, cert_info => <<0:5, 0:1, 0:2>>, lrc => <<>> }
+    end,
     M = #{
         tag => encode_tag(Tag),
         value => V

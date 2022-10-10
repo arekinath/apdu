@@ -26,3 +26,56 @@
 
 %% @doc A helper module for using a "stack" of APDU transforms.
 -module(apdu_stack).
+
+-export([
+    start_link/2
+    ]).
+
+-type mod() :: apdu_transform:mod().
+-type modlist() :: [mod() | {mod(), [term()]}].
+
+%% @doc Starts a stack of APDU transforms and links them up.
+-spec start_link(apdu:protocol(), modlist()) -> {ok, pid()} | {error, term()}.
+start_link(Proto, ModList) ->
+    case start_xforms(Proto, ModList) of
+        {ok, Pids} ->
+            case link_xforms(Pids) of
+                ok -> {ok, Pids};
+                Err -> Err
+            end;
+        Err ->
+            Err
+    end.
+
+start_xforms(_, []) -> {ok, []};
+start_xforms(Proto, [{Mod, Args} | Rest]) when is_atom(Mod) and is_list(Args) ->
+    case apdu_transform:start_link(Mod, Proto, Args) of
+        {ok, Pid} ->
+            case start_xforms(Proto, Rest) of
+                {ok, RestPids} ->
+                    {ok, [Pid | RestPids]};
+                Err ->
+                    Err
+            end;
+        Err ->
+            Err
+    end;
+start_xforms(Proto, [Mod | Rest]) when is_atom(Mod) ->
+    case apdu_transform:start_link(Mod, Proto, []) of
+        {ok, Pid} ->
+            case start_xforms(Proto, Rest) of
+                {ok, RestPids} ->
+                    {ok, [Pid | RestPids]};
+                Err ->
+                    Err
+            end;
+        Err ->
+            Err
+    end.
+
+link_xforms([_Last]) -> ok;
+link_xforms([A, B | Rest]) ->
+    case apdu_transform:connect(A, B) of
+        ok -> link_xforms([B | Rest]);
+        Err -> Err
+    end.
