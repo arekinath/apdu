@@ -56,7 +56,7 @@
     begin_transaction/1,
     command/2,
     reply/2,
-    end_transaction/1,
+    end_transaction/2,
     terminate/1
 ]).
 
@@ -179,8 +179,8 @@ begin_transaction(S = #?MODULE{}) ->
     {ok, S}.
 
 %% @private
-end_transaction(S = #?MODULE{}) ->
-    {ok, S}.
+end_transaction(D, S = #?MODULE{}) ->
+    {ok, D, S}.
 
 %% @private
 command(A0 = #apdu_cmd{}, S0 = #?MODULE{state = idle}) ->

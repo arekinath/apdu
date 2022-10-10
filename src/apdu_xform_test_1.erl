@@ -36,7 +36,7 @@
     begin_transaction/1,
     command/2,
     reply/2,
-    end_transaction/1,
+    end_transaction/2,
     terminate/1
     ]).
 
@@ -50,7 +50,8 @@ terminate(#?MODULE{}) -> ok.
 
 begin_transaction(S0 = #?MODULE{}) -> {ok, S0}.
 
-end_transaction(S0 = #?MODULE{}) -> {ok, eject, S0}.
+end_transaction(D, S0 = #?MODULE{}) ->
+    {ok, apdu_transform:max_dispos([eject, D]), S0}.
 
 command(foo_cmd, S0 = #?MODULE{}) -> {ok, [bar_cmd], S0}.
 

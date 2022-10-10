@@ -50,7 +50,7 @@
     begin_transaction/1,
     command/2,
     reply/2,
-    end_transaction/1,
+    end_transaction/2,
     terminate/1
 ]).
 
@@ -80,8 +80,8 @@ begin_transaction(S = #?MODULE{}) ->
     {ok, S}.
 
 %% @private
-end_transaction(S = #?MODULE{}) ->
-    {ok, S}.
+end_transaction(D, S0 = #?MODULE{}) ->
+    {ok, D, S0}.
 
 %% @private
 % Process a fresh incoming xapdu command.

@@ -41,7 +41,7 @@
     begin_transaction/1,
     command/2,
     reply/2,
-    end_transaction/1,
+    end_transaction/2,
     terminate/1
 ]).
 
@@ -281,11 +281,13 @@ begin_transaction(S = #?MODULE{}) ->
     {ok, S}.
 
 %% @private
-end_transaction(S = #?MODULE{used_creds = CredMap}) ->
-    case maps:size(CredMap) of
-        0 -> {ok, S};
-        _ -> {ok, reset, S#?MODULE{used_creds = #{}}}
-    end.
+end_transaction(D0, S = #?MODULE{used_creds = CredMap}) ->
+    OurDispos = case maps:size(CredMap) of
+        0 -> leave;
+        _ -> reset
+    end,
+    D1 = apdu_transform:max_dispos([D0, OurDispos]),
+    {ok, D1, S#?MODULE{used_creds = #{}}}.
 
 cmd_apdu(get_data, P1, P2, Map) ->
     cmd_apdu(get_data, P1, P2, Map, ?PIV_GET_DATA_INVTAGMAP);

@@ -52,7 +52,7 @@
     begin_transaction/1,
     command/2,
     reply/2,
-    end_transaction/1,
+    end_transaction/2,
     terminate/1
 ]).
 
@@ -193,7 +193,7 @@ init(Proto, []) -> {ok, #?MODULE{proto = Proto, state = none}}.
 begin_transaction(S = #?MODULE{}) -> {ok, S#?MODULE{state = none}}.
 
 %% @private
-end_transaction(S = #?MODULE{}) -> {ok, S}.
+end_transaction(D, S0 = #?MODULE{}) -> {ok, D, S0}.
 
 %% @private
 command(Cmd = #apdu_cmd{proto = Proto0}, S = #?MODULE{state = none,

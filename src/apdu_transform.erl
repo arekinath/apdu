@@ -74,10 +74,10 @@
     {ok, state()} | {error, term()}.
 %% Transform a reply into cooked replies or further commands.
 
--callback end_transaction(state()) -> {ok, state()} | {ok, apdu:disposition(), state()} | {error, term()}.
-%% Called at the end of a card transaction. Can return a disposition,
-%% which will be considered alongside all other transformations' returned
-%% dispositions (the strictest of them will be used).
+-callback end_transaction(apdu:disposition(), state()) ->
+    {ok, apdu:disposition(), state()} | {error, term()}.
+%% Called at the end of a card transaction. The first argument is the current
+%% proposed disposition.
 
 -callback terminate(state()) -> ok.
 
@@ -88,7 +88,9 @@
     command/2,
     commands/2,
     begin_transaction/1,
-    end_transaction/1
+    end_transaction/1,
+    end_transaction/2,
+    max_dispos/1
 ]).
 
 -export([
@@ -149,9 +151,16 @@ commands(Pid, [Cmd | Rest]) ->
 begin_transaction(Pid) ->
     gen_server:call(Pid, begin_transaction, infinity).
 
--spec end_transaction(pid()) -> ok | {ok, apdu:disposition()} | {error, term()}.
+-spec end_transaction(pid()) ->
+    {ok, apdu:disposition()} | {error, term()}.
 end_transaction(Pid) ->
-    gen_server:call(Pid, end_transaction, infinity).
+    gen_server:call(Pid, {end_transaction, leave}, infinity).
+
+%% @private
+-spec end_transaction(pid(), apdu:disposition()) ->
+    {ok, apdu:disposition()} | {error, term()}.
+end_transaction(Pid, Dispos) ->
+    gen_server:call(Pid, {end_transaction, Dispos}, infinity).
 
 -record(?MODULE, {
     mod :: atom(),
@@ -271,23 +280,17 @@ handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
             {stop, Err, S0}
     end;
 
-handle_call(end_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
-                                                 next = Next}) ->
-    case Mod:end_transaction(MS0) of
-        {ok, MS1} when (Next =:= undefined) ->
-            {reply, ok, S0#?MODULE{modstate = MS1}};
+handle_call({end_transaction, D}, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
+                                                      next = Next}) ->
+    case Mod:end_transaction(D, MS0) of
         {ok, Dispos, MS1} when (Next =:= undefined) ->
-            {reply, {ok, Dispos}, S0#?MODULE{modstate = MS1}};
-        {ok, MS1} ->
-            Reply = apdu_transform:end_transaction(Next),
-            {reply, Reply, S0#?MODULE{modstate = MS1}};
+            Dispos1 = max_dispos([D, Dispos]),
+            {reply, {ok, Dispos1}, S0#?MODULE{modstate = MS1}};
         {ok, Dispos, MS1} ->
-            case apdu_transform:end_transaction(Next) of
+            Dispos1 = max_dispos([D, Dispos]),
+            case apdu_transform:end_transaction(Next, Dispos1) of
                 {ok, NextDispos} ->
-                    Max = max_dispos([Dispos, NextDispos]),
-                    {reply, {ok, Max}, S0#?MODULE{modstate = MS1}};
-                ok ->
-                    {reply, {ok, Dispos}, S0#?MODULE{modstate = MS1}};
+                    {reply, {ok, NextDispos}, S0#?MODULE{modstate = MS1}};
                 Err ->
                     {reply, Err, S0#?MODULE{modstate = MS1}}
             end;
@@ -310,6 +313,7 @@ max_dispos(eject, [reset | Rest]) -> max_dispos(eject, Rest);
 max_dispos(eject, [unpower | Rest]) -> max_dispos(eject, Rest);
 max_dispos(_A, [Any | Rest]) -> max_dispos(Any, Rest).
 
+%% @doc Returns the strictest of a list of dispositions.
 -spec max_dispos([apdu:disposition()]) -> apdu:disposition().
 max_dispos([A | Rest]) -> max_dispos(A, Rest).
 
