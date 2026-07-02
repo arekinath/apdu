@@ -1115,7 +1115,7 @@ encode_tlv_map_test() ->
     {ok, Map2} = decode_ber_tlvs_map(D, TagMap),
     ?assertMatch(Map, Map2),
     ?assertMatch(
-        <<"YS1PBAECAwSsCYABAYABAoABA1AHVGVzdGluZ19QEGh0dHBzOi8vdGVzdC5jb20=">>,
+        <<"YS1fUBBodHRwczovL3Rlc3QuY29tTwQBAgMEUAdUZXN0aW5nrAmAAQGAAQKAAQM=">>,
         base64:encode(D)).
 
 encode_tlv_ordered_map_test() ->

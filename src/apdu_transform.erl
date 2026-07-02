@@ -84,13 +84,15 @@
 
 -export([
     start_link/3,
+    start_monitor/3,
     connect/2,
     command/2,
     commands/2,
     begin_transaction/1,
     end_transaction/1,
     end_transaction/2,
-    max_dispos/1
+    max_dispos/1,
+    stop/1
 ]).
 
 -export([
@@ -106,19 +108,42 @@ start_link(Mod, Proto, Args) ->
             {error, {bad_module, Mod}};
         _ ->
             case code:is_loaded(Mod) of
-                false ->
-                    _ = code:load_file(Mod);
-                _ ->
-                    ok
+                false -> _ = code:load_file(Mod);
+                _ -> ok
             end,
-            case {erlang:function_exported(Mod, formats, 0),
-                  erlang:function_exported(Mod, command, 2)} of
-                {false, _} ->
+            HasBehaviour = lists:any(fun
+                ({behaviour, B}) -> lists:member(?MODULE, B);
+                ({behavior, B}) -> lists:member(?MODULE, B);
+                (_) -> false
+            end, Mod:module_info(attributes)),
+            if
+                not HasBehaviour ->
                     {error, {not_apdu_transform, Mod}};
-                {_, false} ->
-                    {error, {not_apdu_transform, Mod}};
-                _ ->
+                HasBehaviour ->
                     gen_server:start_link(?MODULE, [Mod, Proto, Args], [])
+            end
+    end.
+
+-spec start_monitor(mod(), apdu:protocol(), [term()]) -> {ok, {pid(), reference()}} | {error, term()}.
+start_monitor(Mod, Proto, Args) ->
+    case code:which(Mod) of
+        non_existing ->
+            {error, {bad_module, Mod}};
+        _ ->
+            case code:is_loaded(Mod) of
+                false -> _ = code:load_file(Mod);
+                _ -> ok
+            end,
+            HasBehaviour = lists:any(fun
+                ({behaviour, B}) -> lists:member(?MODULE, B);
+                ({behavior, B}) -> lists:member(?MODULE, B);
+                (_) -> false
+            end, Mod:module_info(attributes)),
+            if
+                not HasBehaviour ->
+                    {error, {not_apdu_transform, Mod}};
+                HasBehaviour ->
+                    gen_server:start_monitor(?MODULE, [Mod, Proto, Args], [])
             end
     end.
 
@@ -156,16 +181,20 @@ begin_transaction(Pid) ->
 end_transaction(Pid) ->
     gen_server:call(Pid, {end_transaction, leave}, infinity).
 
-%% @private
 -spec end_transaction(pid(), apdu:disposition()) ->
     {ok, apdu:disposition()} | {error, term()}.
 end_transaction(Pid, Dispos) ->
     gen_server:call(Pid, {end_transaction, Dispos}, infinity).
 
+-spec stop(pid()) -> ok | {error, term()}.
+stop(Pid) ->
+    gen_server:cast(Pid, stop).
+
 -record(?MODULE, {
     mod :: atom(),
     modstate :: term(),
-    next :: undefined | pid()
+    next :: undefined | pid(),
+    in_txn = false :: boolean()
 }).
 
 %% @private
@@ -267,30 +296,34 @@ handle_call({command, Cmd0}, From, S0 = #?MODULE{mod = Mod, modstate = MS0}) ->
             {stop, Err, S0}
     end;
 
+handle_call(begin_transaction, From, S0 = #?MODULE{in_txn = true}) ->
+    {reply, {error, already_transacted}, S0};
 handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                    next = Next}) ->
     case Mod:begin_transaction(MS0) of
         {ok, MS1} when (Next =:= undefined) ->
-            {reply, ok, S0#?MODULE{modstate = MS1}};
+            {reply, ok, S0#?MODULE{modstate = MS1, in_txn = true}};
         {ok, MS1} ->
             Reply = apdu_transform:begin_transaction(Next),
-            {reply, Reply, S0#?MODULE{modstate = MS1}};
+            {reply, Reply, S0#?MODULE{modstate = MS1, in_txn = true}};
         Err ->
             gen_server:reply(From, Err),
             {stop, Err, S0}
     end;
 
+handle_call({end_transaction, _D}, From, S0 = #?MODULE{in_txn = false}) ->
+    {reply, {error, not_transacted}, S0};
 handle_call({end_transaction, D}, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                       next = Next}) ->
     case Mod:end_transaction(D, MS0) of
         {ok, Dispos, MS1} when (Next =:= undefined) ->
             Dispos1 = max_dispos([D, Dispos]),
-            {reply, {ok, Dispos1}, S0#?MODULE{modstate = MS1}};
+            {reply, {ok, Dispos1}, S0#?MODULE{modstate = MS1, in_txn = false}};
         {ok, Dispos, MS1} ->
             Dispos1 = max_dispos([D, Dispos]),
             case apdu_transform:end_transaction(Next, Dispos1) of
                 {ok, NextDispos} ->
-                    {reply, {ok, NextDispos}, S0#?MODULE{modstate = MS1}};
+                    {reply, {ok, NextDispos}, S0#?MODULE{modstate = MS1, in_txn = false}};
                 Err ->
                     {reply, Err, S0#?MODULE{modstate = MS1}}
             end;
@@ -300,6 +333,8 @@ handle_call({end_transaction, D}, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
     end.
 
 %% @private
+handle_cast(stop, S0 = #?MODULE{}) ->
+    {stop, normal, S0};
 handle_cast(Msg, S0 = #?MODULE{}) ->
     {stop, {bad_cast, Msg}, S0}.
 
@@ -371,5 +406,12 @@ stack_err_test() ->
     ?assertMatch({error, _}, Res0),
     Res1 = apdu_stack:start_link(t1, [apdu_xform_test_1, apdu_xform_test_3]),
     ?assertMatch({error, _}, Res1).
+
+stop_test() ->
+    {ok, {Pid, MRef}} = apdu_transform:start_monitor(apdu_xform_test_1, t1, []),
+    ok = apdu_transform:stop(Pid),
+    receive
+        {'DOWN', MRef, process, Pid, normal} -> ok
+    end.
 
 -endif.
