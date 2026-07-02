@@ -49,7 +49,7 @@ start_link(Proto, ModList) ->
 start_monitor(Proto, ModList) ->
     maybe
         {ok, PidRefs} ?= start_monitor_xforms(Proto, ModList),
-        ok ?= link_xforms([Pid || {Pid, Ref} <- PidRefs]),
+        ok ?= link_xforms([Pid || {Pid, _Ref} <- PidRefs]),
         {ok, PidRefs}
     end.
 
