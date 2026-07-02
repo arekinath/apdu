@@ -28,49 +28,61 @@
 -module(apdu_stack).
 
 -export([
-    start_link/2
+    start_link/2,
+    start_monitor/2,
+    stop/1
     ]).
 
 -type mod() :: apdu_transform:mod().
 -type modlist() :: [mod() | {mod(), [term()]}].
 
 %% @doc Starts a stack of APDU transforms and links them up.
--spec start_link(apdu:protocol(), modlist()) -> {ok, pid()} | {error, term()}.
+-spec start_link(apdu:protocol(), modlist()) -> {ok, [pid()]} | {error, term()}.
 start_link(Proto, ModList) ->
-    case start_xforms(Proto, ModList) of
-        {ok, Pids} ->
-            case link_xforms(Pids) of
-                ok -> {ok, Pids};
-                Err -> Err
-            end;
-        Err ->
-            Err
+    maybe
+        {ok, Pids} ?= start_link_xforms(Proto, ModList),
+        ok ?= link_xforms(Pids),
+        {ok, Pids}
     end.
 
-start_xforms(_, []) -> {ok, []};
-start_xforms(Proto, [{Mod, Args} | Rest]) when is_atom(Mod) and is_list(Args) ->
-    case apdu_transform:start_link(Mod, Proto, Args) of
-        {ok, Pid} ->
-            case start_xforms(Proto, Rest) of
-                {ok, RestPids} ->
-                    {ok, [Pid | RestPids]};
-                Err ->
-                    Err
-            end;
-        Err ->
-            Err
-    end;
-start_xforms(Proto, [Mod | Rest]) when is_atom(Mod) ->
-    case apdu_transform:start_link(Mod, Proto, []) of
-        {ok, Pid} ->
-            case start_xforms(Proto, Rest) of
-                {ok, RestPids} ->
-                    {ok, [Pid | RestPids]};
-                Err ->
-                    Err
-            end;
-        Err ->
-            Err
+-spec start_monitor(apdu:protocol(), modlist()) -> {ok, [{pid(), reference()}]} | {error, term()}.
+start_monitor(Proto, ModList) ->
+    maybe
+        {ok, PidRefs} ?= start_monitor_xforms(Proto, ModList),
+        ok ?= link_xforms([Pid || {Pid, Ref} <- PidRefs]),
+        {ok, PidRefs}
+    end.
+
+-spec stop([pid()] | [{pid(), reference()}]) -> ok | {error, term()}.
+stop([]) -> ok;
+stop([{Pid, Ref} | Rest]) ->
+    ok = apdu_transform:stop(Pid),
+    receive
+        {'DOWN', Ref, process, Pid, _} -> ok
+    end,
+    stop(Rest);
+stop([Pid | Rest]) ->
+    ok = apdu_transform:stop(Pid),
+    stop(Rest).
+
+start_monitor_xforms(_, []) -> {ok, []};
+start_monitor_xforms(Proto, [Mod | Rest]) when is_atom(Mod) ->
+    start_monitor_xforms(Proto, [{Mod, []} | Rest]);
+start_monitor_xforms(Proto, [{Mod, Args} | Rest]) when is_atom(Mod) and is_list(Args) ->
+    maybe
+        {ok, {Pid, Ref}} ?= apdu_transform:start_monitor(Mod, Proto, Args),
+        {ok, RestPidRefs} ?= start_monitor_xforms(Proto, Rest),
+        {ok, [{Pid, Ref} | RestPidRefs]}
+    end.
+
+start_link_xforms(_, []) -> {ok, []};
+start_link_xforms(Proto, [Mod | Rest]) when is_atom(Mod) ->
+    start_link_xforms(Proto, [{Mod, []} | Rest]);
+start_link_xforms(Proto, [{Mod, Args} | Rest]) when is_atom(Mod) and is_list(Args) ->
+    maybe
+        {ok, Pid} ?= apdu_transform:start_link(Mod, Proto, Args),
+        {ok, RestPids} ?= start_link_xforms(Proto, Rest),
+        {ok, [Pid | RestPids]}
     end.
 
 link_xforms([_Last]) -> ok;

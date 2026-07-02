@@ -186,7 +186,12 @@ end_transaction(Pid) ->
 end_transaction(Pid, Dispos) ->
     gen_server:call(Pid, {end_transaction, Dispos}, infinity).
 
--spec stop(pid()) -> ok | {error, term()}.
+-spec stop(pid() | {pid(), reference()}) -> ok | {error, term()}.
+stop({Pid, MRef}) ->
+    gen_server:cast(Pid, stop),
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    end;
 stop(Pid) ->
     gen_server:cast(Pid, stop).
 
@@ -296,7 +301,7 @@ handle_call({command, Cmd0}, From, S0 = #?MODULE{mod = Mod, modstate = MS0}) ->
             {stop, Err, S0}
     end;
 
-handle_call(begin_transaction, From, S0 = #?MODULE{in_txn = true}) ->
+handle_call(begin_transaction, _From, S0 = #?MODULE{in_txn = true}) ->
     {reply, {error, already_transacted}, S0};
 handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                    next = Next}) ->
@@ -311,7 +316,7 @@ handle_call(begin_transaction, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
             {stop, Err, S0}
     end;
 
-handle_call({end_transaction, _D}, From, S0 = #?MODULE{in_txn = false}) ->
+handle_call({end_transaction, _D}, _From, S0 = #?MODULE{in_txn = false}) ->
     {reply, {error, not_transacted}, S0};
 handle_call({end_transaction, D}, From, S0 = #?MODULE{mod = Mod, modstate = MS0,
                                                       next = Next}) ->
@@ -409,9 +414,12 @@ stack_err_test() ->
 
 stop_test() ->
     {ok, {Pid, MRef}} = apdu_transform:start_monitor(apdu_xform_test_1, t1, []),
-    ok = apdu_transform:stop(Pid),
-    receive
-        {'DOWN', MRef, process, Pid, normal} -> ok
-    end.
+    ?assertMatch(ok, apdu_transform:stop({Pid, MRef})).
+
+stop_stack_test() ->
+    {ok, Stack = [{Pid, _} | _]} = apdu_stack:start_monitor(t1,
+        [apdu_xform_test_3, apdu_xform_test_2]),
+    ?assertMatch(ok, apdu_transform:begin_transaction(Pid)),
+    ?assertMatch(ok, apdu_stack:stop(Stack)).
 
 -endif.
